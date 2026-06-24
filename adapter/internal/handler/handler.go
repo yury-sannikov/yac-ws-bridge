@@ -10,10 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/yury-sannikov/hass-ws-relay/internal/config"
 	"github.com/yury-sannikov/hass-ws-relay/internal/protocol"
 	"github.com/yury-sannikov/hass-ws-relay/internal/wsapi"
-	"github.com/gorilla/websocket"
 )
 
 type clientState struct {

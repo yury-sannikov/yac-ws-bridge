@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/yury-sannikov/hass-ws-relay/internal/config"
 	"github.com/yury-sannikov/hass-ws-relay/internal/protocol"
-	"github.com/gorilla/websocket"
 )
 
 func TestCompareSeqUsesYandexReverseChronologicalOrder(t *testing.T) {

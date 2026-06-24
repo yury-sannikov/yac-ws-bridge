@@ -28,7 +28,8 @@ const (
 // Empty string for control messages (HELLO, PING, PONG).
 //
 // Wire format:
-//   [ClientID Len: 2 bytes uint16 BE] [ClientID: variable UTF-8] [Type: 1] [Flags: 1] [SeqID Len: 2 bytes uint16 BE] [SeqID: variable UTF-8] [Payload: variable]
+//
+//	[ClientID Len: 2 bytes uint16 BE] [ClientID: variable UTF-8] [Type: 1] [Flags: 1] [SeqID Len: 2 bytes uint16 BE] [SeqID: variable UTF-8] [Payload: variable]
 //
 // SeqID is the API Gateway messageId (string, incrementally ordered).
 // Empty for CONNECT, DISCONNECT, and control frames.

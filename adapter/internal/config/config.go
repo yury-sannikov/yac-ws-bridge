@@ -34,8 +34,8 @@ type Config struct {
 		Mode string `yaml:"mode"` // "grpc" or "rest", default "rest"
 	} `yaml:"wsApi"`
 	Reorder struct {
-		C2TDelayMs    int    `yaml:"c2tDelayMs"`
-		C2TMaxDelayMs int    `yaml:"c2tMaxDelayMs"`
+		C2TDelayMs    int `yaml:"c2tDelayMs"`
+		C2TMaxDelayMs int `yaml:"c2tMaxDelayMs"`
 		// SeqOrder controls how DATA_C2T sequence IDs (Yandex API Gateway message
 		// IDs) map to chronological order. "descending" (default) means the newest
 		// message has the smallest ID (Yandex's reverse-chronological scheme);
