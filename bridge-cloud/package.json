@@ -1,5 +1,5 @@
 {
-  "name": "bridge-to-freedom-cloud",
+  "name": "hass-ws-relay-cloud",
   "version": "0.1.0",
   "private": true,
   "dependencies": {}

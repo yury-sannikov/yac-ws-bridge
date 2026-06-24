@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bridge-to-freedom/adapter/internal/config"
-	"github.com/bridge-to-freedom/adapter/internal/handler"
-	"github.com/bridge-to-freedom/adapter/internal/protocol"
+	"github.com/yury-sannikov/hass-ws-relay/internal/config"
+	"github.com/yury-sannikov/hass-ws-relay/internal/handler"
+	"github.com/yury-sannikov/hass-ws-relay/internal/protocol"
 	"github.com/gorilla/websocket"
 )
 
@@ -34,20 +34,19 @@ func (u *Upstream) dial(ctx context.Context) (*websocket.Conn, error) {
 		return nil, err
 	}
 
-	// HELLO
 	helloPayload := make([]byte, 1+len(u.cfg.Bridge.AuthToken))
 	helloPayload[0] = 0x01
 	copy(helloPayload[1:], []byte(u.cfg.Bridge.AuthToken))
 	frame := protocol.Encode(protocol.Frame{Type: protocol.MsgHello, Payload: helloPayload})
 	if err := ws.WriteMessage(websocket.BinaryMessage, frame); err != nil {
 		ws.Close()
-		return nil, fmt.Errorf("send HELLO: %w", err)
+		return nil, fmt.Errorf("handshake write: %w", err)
 	}
 
 	_, msg, err := ws.ReadMessage()
 	if err != nil {
 		ws.Close()
-		return nil, fmt.Errorf("read HELLO response: %w", err)
+		return nil, fmt.Errorf("handshake read: %w", err)
 	}
 	resp, err := protocol.Decode(msg)
 	if err != nil {
@@ -56,20 +55,16 @@ func (u *Upstream) dial(ctx context.Context) (*websocket.Conn, error) {
 	}
 	if resp.Type == protocol.MsgHelloErr {
 		ws.Close()
-		return nil, fmt.Errorf("rejected: %s", string(resp.Payload))
+		return nil, fmt.Errorf("auth rejected: %s", string(resp.Payload))
 	}
 	if resp.Type != protocol.MsgHelloOK {
 		ws.Close()
-		return nil, fmt.Errorf("unexpected: 0x%02x", resp.Type)
+		return nil, fmt.Errorf("unexpected frame: 0x%02x", resp.Type)
 	}
 
-	// Store the upstream connection ID returned by the bridge
 	u.mu.Lock()
 	u.upstreamConnID = string(resp.Payload)
 	u.mu.Unlock()
-	if u.upstreamConnID != "" {
-		log.Printf("[INFO] upstream connection ID: %s", u.upstreamConnID)
-	}
 
 	if tc, ok := ws.UnderlyingConn().(*net.TCPConn); ok {
 		tc.SetNoDelay(true)
@@ -142,7 +137,7 @@ func (u *Upstream) Run(ctx context.Context) {
 		}
 		ws, err := u.dial(ctx)
 		if err != nil {
-			log.Printf("[WARN] connect failed err=%v retryIn=%v", err, delay)
+			log.Printf("connect err=%v retry=%v", err, delay)
 			select {
 			case <-ctx.Done():
 				return
@@ -160,7 +155,7 @@ func (u *Upstream) Run(ctx context.Context) {
 		u.mu.Lock()
 		u.conn = ws
 		u.mu.Unlock()
-		log.Println("[INFO] upstream connected and authenticated")
+		log.Println("connected")
 
 		readCtx, readCancel := context.WithCancel(ctx)
 		captured := ws
@@ -185,7 +180,7 @@ func (u *Upstream) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		log.Println("[INFO] reconnecting...")
+		log.Println("reconnecting")
 	}
 }
 

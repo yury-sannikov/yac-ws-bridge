@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bridge-to-freedom/adapter/internal/handler"
-	"github.com/bridge-to-freedom/adapter/internal/protocol"
-	"github.com/bridge-to-freedom/adapter/internal/upstream"
+	"github.com/yury-sannikov/hass-ws-relay/internal/handler"
+	"github.com/yury-sannikov/hass-ws-relay/internal/protocol"
+	"github.com/yury-sannikov/hass-ws-relay/internal/upstream"
 )
 
 // Server handles HTTP POST wake-up requests from the bridge.

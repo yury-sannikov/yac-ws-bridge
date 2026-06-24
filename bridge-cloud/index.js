@@ -1,34 +1,24 @@
-﻿// Bridge to Freedom - Yandex Cloud Function (v3: hybrid)
-// Bridge->Adapter: upstream WS | Adapter->Client: direct WS API
-//
-// Env: AUTH_TOKEN, ADAPTER_URL (optional POST fallback),
-//      FORWARD_HTTP ("true"/"1" to proxy plain HTTP to the target via the adapter)
-
-const https = require('https');
+﻿const https = require('https');
 const http = require('http');
 
-const AUTH_TOKEN = process.env.AUTH_TOKEN;
-const WAKEUP_URL = process.env.ADAPTER_URL || null;
-const FORWARD_HTTP = ['true','1'].includes((process.env.FORWARD_HTTP||'').toLowerCase());
+const RELAY_SECRET = process.env.HASS_RELAY_SECRET;
+const ORIGIN_BASE = process.env.HA_ORIGIN_BASE || null;
+const HTTP_PASS = ['true','1'].includes((process.env.HA_HTTP_PASSTHROUGH||'').toLowerCase());
 
 const httpsAgent = new https.Agent({ keepAlive: true });
 const httpAgent = new http.Agent({ keepAlive: true });
 
-// Build a full URL by appending a suffix to ADAPTER_URL's existing path.
-function adapterUrl(suffix) {
-  const u = new URL(WAKEUP_URL);
+function originUrl(suffix) {
+  const u = new URL(ORIGIN_BASE);
   u.pathname = u.pathname.replace(/\/+$/, '') + '/' + suffix;
   return u.toString();
 }
 
-// --- State ---
 let upstreamConnId = null;
-let _fetchPromise = null;
+let _initPromise = null;
 
-// --- Helpers ---
 function getHeader(h, n) {
   if (!h) return '';
-  // Try exact match first, then case-insensitive scan
   if (h[n]) return h[n];
   const lower = n.toLowerCase();
   for (const k of Object.keys(h)) {
@@ -68,25 +58,18 @@ function httpGet(url, headers) {
   });
 }
 
-async function fetchUpstreamConnId() {
-  if (!WAKEUP_URL) return;
+async function refreshConnId() {
+  if (!ORIGIN_BASE) return;
   try {
-    const url = adapterUrl('upstream-id');
-    console.log('fetching upstream connId from adapter...');
-    const r = await httpGet(url, { 'Authorization': 'Bearer ' + AUTH_TOKEN });
+    const r = await httpGet(originUrl('status'), { 'Authorization': 'Bearer ' + RELAY_SECRET });
     if (r.status === 200 && r.body) {
       upstreamConnId = r.body;
-      console.log('fetched upstream connId from adapter:', upstreamConnId);
-    } else {
-      console.log('adapter returned no upstream connId, status:', r.status);
     }
-  } catch(e) { console.error('fetchUpstreamConnId err:', e.message || e); }
+  } catch(e) { console.error('init err:', e.message || e); }
 }
 
-// Fetch upstream connId at module init (YC may pre-spawn instances)
-_fetchPromise = fetchUpstreamConnId();
+_initPromise = refreshConnId();
 
-// WS management API - send to a specific connection
 async function wsSend(connId, data, type, token) {
   const b64 = Buffer.from(data).toString('base64');
   const body = JSON.stringify({ data: b64, type: type });
@@ -95,28 +78,22 @@ async function wsSend(connId, data, type, token) {
       `https://apigateway-connections.api.cloud.yandex.net/apigateways/websocket/v1/connections/${encodeURIComponent(connId)}:send`,
       { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token }, body
     );
-    if (r.status >= 300) console.error('wsSend fail:', r.status, connId);
+    if (r.status >= 300) console.error('push err:', r.status);
     return r.status;
-  } catch(e) { console.error('wsSend err:', e, connId); return 500; }
+  } catch(e) { console.error('push exc:', e.message); return 500; }
 }
 
-// WS management API - force-close a specific connection.
-// Used to cleanly reset a client when a DATA frame could not be delivered to
-// the adapter: a lost TLS record desynchronises the stream, so the only safe
-// recovery is to tear the connection down so the client reconnects fresh.
 async function wsDisconnect(connId, token) {
   try {
     const r = await httpPost(
       `https://apigateway-connections.api.cloud.yandex.net/apigateways/websocket/v1/connections/${encodeURIComponent(connId)}:disconnect`,
       { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token }, '{}'
     );
-    if (r.status >= 300) console.error('wsDisconnect fail:', r.status, connId);
+    if (r.status >= 300) console.error('reset err:', r.status);
     return r.status;
-  } catch(e) { console.error('wsDisconnect err:', e, connId); return 500; }
+  } catch(e) { console.error('reset exc:', e.message); return 500; }
 }
 
-// --- Protocol (string client IDs, no batching in v3) ---
-// Wire: [2B cidLen][clientId][type][flags][2B seqLen][seqId][payload]
 function encode(clientId, type, flags, seqId, payload) {
   const cid = Buffer.from(clientId, 'utf-8');
   const seq = Buffer.from(seqId || '', 'utf-8');
@@ -137,7 +114,6 @@ function decode(buf) {
   return { clientId: buf.subarray(2, 2+cidLen).toString('utf-8'), type: buf[off], flags: buf[off+1], seqId: buf.subarray(off+4, off+4+seqLen).toString('utf-8'), payload: buf.subarray(off+4+seqLen) };
 }
 
-// CLIENT_CONNECTED payload: [2B pathLen][path][2B subLen][sub][2B tokenLen][token]
 function encodeClientConnected(path, subprotocols, iamToken) {
   const p = Buffer.from(path, 'utf-8');
   const s = Buffer.from(subprotocols, 'utf-8');
@@ -150,64 +126,42 @@ function encodeClientConnected(path, subprotocols, iamToken) {
   return buf;
 }
 
-const MSG_HELLO=0x01, MSG_HELLO_OK=0x02, MSG_HELLO_ERR=0x03;
-const MSG_CLIENT_CONNECTED=0x10, MSG_CLIENT_DISCONNECTED=0x11;
-const MSG_DATA_C2T=0x20, MSG_PING=0xF0, MSG_PONG=0xF1;
-const FLAG_TEXT=0x01;
+const T_HELLO=0x01, T_HELLO_OK=0x02, T_HELLO_ERR=0x03;
+const T_CONN=0x10, T_DISC=0x11;
+const T_DATA=0x20, T_PING=0xF0, T_PONG=0xF1;
+const F_TEXT=0x01;
 
-// Send frame to adapter via upstream WS, POST fallback if unavailable.
-// Returns true only when the frame was provably handed to the adapter:
-//   - WS path: management API returned 2xx.
-//   - POST path: the adapter's wakeup endpoint returned 200 (it ingests the
-//     frame synchronously before replying, so 200 == delivered).
-// A false return means the frame is lost; callers MUST treat that as fatal for
-// the affected stream (reset the client) rather than silently returning 200.
-//
-// IMPORTANT: never block on fetchUpstreamConnId() on the hot path — the latency
-// gap between the fast (wsSend ~5ms) and slow (fetch+wsSend ~200ms) paths causes
-// message reordering across CF instances. When connId is unknown, go straight to
-// POST (~30ms, reliable) and let the background fetch populate connId for later.
-async function sendToAdapter(frame, iamToken) {
+async function forwardToOrigin(frame, iamToken) {
   if (upstreamConnId) {
     const st = await wsSend(upstreamConnId, frame, 'BINARY', iamToken);
     if (st >= 200 && st < 300) return true;
-    console.error('upstream WS send failed, status:', st, 'connId:', upstreamConnId);
+    console.error('push failed:', st);
     upstreamConnId = null;
-    // Fall through to POST. NOTE: a 2xx wsSend can still be lost if the gateway
-    // has not yet reaped a dead upstream socket (no end-to-end ack exists). This
-    // window is unavoidable without a client-side sequence/ack layer.
   }
-  // POST fallback — synchronous adapter ingest, also triggers upstream connect.
-  // Retry once to avoid dropping a frame on a transient network blip.
-  if (!WAKEUP_URL) return false;
+  if (!ORIGIN_BASE) return false;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const r = await httpPost(WAKEUP_URL, {
+      const r = await httpPost(ORIGIN_BASE, {
         'Content-Type': 'application/octet-stream',
-        'Authorization': 'Bearer ' + AUTH_TOKEN,
+        'Authorization': 'Bearer ' + RELAY_SECRET,
       }, Buffer.from(frame));
       if (r.status === 200) {
         if (r.body) upstreamConnId = r.body;
         return true;
       }
-      console.error('wakeup POST non-200, status:', r.status, 'attempt:', attempt);
+      console.error('origin POST err:', r.status);
     } catch(e) {
-      console.error('wakeup POST err (attempt ' + attempt + '):', e.message || e);
+      console.error('origin exc:', e.message || e);
     }
   }
   return false;
 }
 
-// --- HTTP forwarding ---
 async function forwardHTTP(event) {
-  if (!WAKEUP_URL) return { statusCode: 502, body: 'no adapter URL configured' };
-  const url = adapterUrl('proxy');
-
-  // API Gateway puts captured path in event.params.path (not event.path, which is the route template)
+  if (!ORIGIN_BASE) return { statusCode: 502, body: 'unavailable' };
   const actualPath = (event.params && event.params.path)
     ? '/' + event.params.path
     : event.url || event.path || '/';
-
   const proxyReq = {
     method: event.httpMethod || 'GET',
     path: actualPath,
@@ -216,24 +170,21 @@ async function forwardHTTP(event) {
     body: event.body || '',
     isBase64Encoded: event.isBase64Encoded || false,
   };
-
   try {
-    const r = await httpPost(url, {
+    const r = await httpPost(originUrl('relay'), {
       'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + AUTH_TOKEN,
+      'Authorization': 'Bearer ' + RELAY_SECRET,
     }, JSON.stringify(proxyReq));
-    const resp = JSON.parse(r.body);
-    return resp;
+    return JSON.parse(r.body);
   } catch(e) {
-    console.error('forwardHTTP err:', e.message || e);
-    return { statusCode: 502, body: 'proxy error' };
+    console.error('http fwd err:', e.message || e);
+    return { statusCode: 502, body: 'error' };
   }
 }
 
-// --- Handler ---
 module.exports.handler = async function(event, context) {
   try { return await handle(event, context); }
-  catch(e) { console.error('ERROR:', e.stack||e); return {statusCode:200}; }
+  catch(e) { console.error('exc:', e.stack||e); return {statusCode:200}; }
 };
 
 async function handle(event, context) {
@@ -241,61 +192,46 @@ async function handle(event, context) {
   const connId = rc.connectionId;
   const ev = rc.eventType;
   const token = context.token?.access_token || '';
-  const route = rc.apiGateway?.operationContext?.route || 'client';
+  const route = rc.apiGateway?.operationContext?.route || 'channel';
 
-  // --- HTTP forwarding (non-WebSocket request) ---
-  if (!ev && FORWARD_HTTP) {
+  if (!ev && HTTP_PASS) {
     return await forwardHTTP(event);
   }
 
-  // --- UPSTREAM (adapter) ---
-  if (route === 'upstream') {
+  if (route === 'origin') {
     if (ev === 'CONNECT') {
       upstreamConnId = connId;
-      console.log('upstream connected:', connId);
       return { statusCode: 200 };
     }
     if (ev === 'MESSAGE') {
-      if (!upstreamConnId) { upstreamConnId = connId; console.log('upstream recovered:', connId); }
+      if (!upstreamConnId) { upstreamConnId = connId; }
       const buf = event.isBase64Encoded ? Buffer.from(event.body,'base64') : Buffer.from(event.body||'');
       const f = decode(buf);
-      if (f.type === MSG_HELLO) {
+      if (f.type === T_HELLO) {
         const ver = f.payload[0];
         const tok = f.payload.subarray(1).toString('utf-8');
-        if (ver !== 1 || tok !== AUTH_TOKEN) {
-          return binaryResp(encode('', MSG_HELLO_ERR, 0, '', Buffer.from('auth failed')));
+        if (ver !== 1 || tok !== RELAY_SECRET) {
+          return binaryResp(encode('', T_HELLO_ERR, 0, '', Buffer.from('unauthorized')));
         }
-        console.log('adapter authenticated, upstream connId:', upstreamConnId);
-        return binaryResp(encode('', MSG_HELLO_OK, 0, '', Buffer.from(upstreamConnId || '')));
+        return binaryResp(encode('', T_HELLO_OK, 0, '', Buffer.from(upstreamConnId || '')));
       }
-      if (f.type === MSG_PING) return binaryResp(encode('', MSG_PONG, 0, ''));
+      if (f.type === T_PING) return binaryResp(encode('', T_PONG, 0, ''));
       return { statusCode: 200 };
     }
     if (ev === 'DISCONNECT') {
       if (upstreamConnId === connId) upstreamConnId = null;
-      console.log('upstream disconnected');
       return { statusCode: 200 };
     }
     return { statusCode: 200 };
   }
 
-  // --- CLIENT ---
-  // NOTE: do NOT block the hot path on _fetchPromise. Waiting ~200ms for the
-  // background connId fetch would delay this frame while frames on warm
-  // instances race ahead, causing reordering. When connId is unknown the POST
-  // fallback (reliable, ~30ms) keeps arrival skew within the adapter's reorder
-  // window. The background fetch still populates connId for subsequent frames.
-
   if (ev === 'CONNECT') {
     const path = event.path || '/';
     const sub = getHeader(event.headers, 'Sec-WebSocket-Protocol');
-    console.log('client CONNECT:', connId, 'path:', path, 'subproto:', sub ? sub.substring(0,50)+'...' : '(none)');
     const payload = encodeClientConnected(path, sub, token);
-    const ok = await sendToAdapter(encode(connId, MSG_CLIENT_CONNECTED, 0, '', payload), token);
+    const ok = await forwardToOrigin(encode(connId, T_CONN, 0, '', payload), token);
     if (!ok) {
-      // Could not tell the adapter the client connected — reject the handshake
-      // so the client retries instead of opening a connection that goes nowhere.
-      console.error('CLIENT_CONNECTED delivery failed, rejecting connect:', connId);
+      console.error('session open failed:', connId);
       return { statusCode: 502 };
     }
     const headers = {};
@@ -308,19 +244,16 @@ async function handle(event, context) {
     const ct = getHeader(event.headers, 'Content-Type');
     const isText = ct.startsWith('application/json') || ct.startsWith('text/');
     const rawMsgId = rc.messageId || '';
-    console.log('client MSG:', connId, 'len:', buf.length, 'messageId:', rawMsgId, 'isText:', isText);
-    const ok = await sendToAdapter(encode(connId, MSG_DATA_C2T, isText ? FLAG_TEXT : 0, rawMsgId, buf), token);
+    const ok = await forwardToOrigin(encode(connId, T_DATA, isText ? F_TEXT : 0, rawMsgId, buf), token);
     if (!ok) {
-      // A DATA frame was lost. The TLS stream is now unrecoverable, so force a
-      // clean close: the client will reconnect and start a fresh handshake.
-      console.error('DATA_C2T delivery failed, disconnecting client:', connId, 'messageId:', rawMsgId);
+      console.error('stream reset:', connId);
       await wsDisconnect(connId, token);
     }
     return { statusCode: 200 };
   }
 
   if (ev === 'DISCONNECT') {
-    await sendToAdapter(encode(connId, MSG_CLIENT_DISCONNECTED, 0, ''), token);
+    await forwardToOrigin(encode(connId, T_DISC, 0, ''), token);
     return { statusCode: 200 };
   }
 

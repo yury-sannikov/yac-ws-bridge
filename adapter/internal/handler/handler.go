@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bridge-to-freedom/adapter/internal/config"
-	"github.com/bridge-to-freedom/adapter/internal/protocol"
-	"github.com/bridge-to-freedom/adapter/internal/wsapi"
+	"github.com/yury-sannikov/hass-ws-relay/internal/config"
+	"github.com/yury-sannikov/hass-ws-relay/internal/protocol"
+	"github.com/yury-sannikov/hass-ws-relay/internal/wsapi"
 	"github.com/gorilla/websocket"
 )
 
@@ -91,7 +91,7 @@ func (h *Handler) cleanupEarlyData() {
 		h.mu.Lock()
 		for id, eb := range h.earlyData {
 			if time.Since(eb.createdAt) > 30*time.Second {
-				log.Printf("[WARN] dropping stale early buffer clientID=%s msgs=%d age=%v", id, len(eb.frames), time.Since(eb.createdAt))
+				log.Printf("drop stale buf id=%s msgs=%d age=%v", id, len(eb.frames), time.Since(eb.createdAt))
 				delete(h.earlyData, id)
 			}
 		}
@@ -103,7 +103,7 @@ func (h *Handler) cleanupEarlyData() {
 		h.mu.Unlock()
 
 		if n := atomic.LoadUint64(&h.lateSeqCloses); n > 0 {
-			log.Printf("[INFO] reorder stats: lateSeqCloses=%d (clients reset due to out-of-window/lost C2T frames)", n)
+			log.Printf("reorder resets=%d", n)
 		}
 	}
 }
@@ -122,14 +122,14 @@ func (h *Handler) HandleFrame(f protocol.Frame) {
 	case protocol.MsgPong:
 	// expected reply to our ping
 	default:
-		log.Printf("[WARN] unknown frame type type=0x%02x", f.Type)
+		log.Printf("unknown frame 0x%02x", f.Type)
 	}
 }
 
 func (h *Handler) onClientConnected(f protocol.Frame) {
 	payload, err := protocol.DecodeClientConnected(f.Payload)
 	if err != nil {
-		log.Printf("[ERROR] bad CLIENT_CONNECTED err=%v", err)
+		log.Printf("bad connect payload err=%v", err)
 		return
 	}
 
@@ -143,13 +143,13 @@ func (h *Handler) onClientConnected(f protocol.Frame) {
 		if eb.disconnected {
 			h.mu.Unlock()
 			cancel()
-			log.Printf("[INFO] client already disconnected before registration clientID=%s earlyMsgs=%d", f.ClientID, len(eb.frames))
+			log.Printf("early disconnect id=%s", f.ClientID)
 			return
 		}
 		if len(eb.frames) > 0 {
 			sort.SliceStable(eb.frames, func(i, j int) bool { return h.reorder.pendingLess(eb.frames[i], eb.frames[j]) })
 			cs.pending = append(cs.pending, eb.frames...)
-			log.Printf("[INFO] incorporated %d early messages (sorted by alphabetic seqID) for clientID=%s", len(eb.frames), f.ClientID)
+			log.Printf("replayed %d early frames id=%s", len(eb.frames), f.ClientID)
 		}
 	}
 	h.clients[f.ClientID] = cs
@@ -172,9 +172,9 @@ func (h *Handler) connectToTarget(ctx context.Context, clientID string, p protoc
 
 	conn, resp, err := dialer.DialContext(ctx, targetURL, header)
 	if err != nil {
-		log.Printf("[ERROR] target connect failed clientID=%s err=%v took=%v", clientID, err, time.Since(start))
+		log.Printf("target connect failed id=%s err=%v took=%v", clientID, err, time.Since(start))
 		if resp != nil {
-			log.Printf("[ERROR] target response status=%d proto=%s", resp.StatusCode, resp.Header.Get("Sec-WebSocket-Protocol"))
+			log.Printf("target response status=%d", resp.StatusCode)
 		}
 		if cs.iamToken != "" {
 			h.ws.Disconnect(clientID, cs.iamToken)
@@ -201,7 +201,7 @@ func (h *Handler) connectToTarget(ctx context.Context, clientID string, p protoc
 	h.scheduleFlushLocked(clientID, cs)
 	h.mu.Unlock()
 
-	log.Printf("[INFO] target connected clientID=%s url=%s took=%v pendingQueued=%d", clientID, targetURL, time.Since(start), pendingCount)
+	log.Printf("target connected id=%s took=%v pending=%d", clientID, time.Since(start), pendingCount)
 	h.readFromTarget(clientID, conn, cs)
 }
 
@@ -230,13 +230,13 @@ func (h *Handler) onDataC2T(f protocol.Frame) {
 		}
 		eb.frames = append(eb.frames, msg)
 		h.mu.Unlock()
-		log.Printf("[INFO] buffered early DATA_C2T for unregistered client clientID=%s seqID=%s buffered=%d", f.ClientID, f.SeqID, len(eb.frames))
+		log.Printf("early data buf id=%s seq=%s n=%d", f.ClientID, f.SeqID, len(eb.frames))
 		return
 	}
 	if h.reorder.isLateSeq(cs.lastFlushedSeqID, f.SeqID) {
 		h.mu.Unlock()
 		atomic.AddUint64(&h.lateSeqCloses, 1)
-		log.Printf("[WARN] late DATA_C2T after newer data was flushed, closing client clientID=%s seqID=%s last=%s", f.ClientID, f.SeqID, cs.lastFlushedSeqID)
+		log.Printf("late frame reset id=%s seq=%s last=%s", f.ClientID, f.SeqID, cs.lastFlushedSeqID)
 		h.closeClient(f.ClientID, cs, "late C2T data")
 		return
 	}
@@ -267,7 +267,7 @@ func (h *Handler) onClientDisconnected(f protocol.Frame) {
 		}
 		eb.disconnected = true
 		h.mu.Unlock()
-		log.Printf("[INFO] buffered early DISCONNECT for unregistered client clientID=%s", f.ClientID)
+		log.Printf("early disc buf id=%s", f.ClientID)
 		return
 	}
 	delete(h.clients, f.ClientID)
@@ -282,7 +282,7 @@ func (h *Handler) onClientDisconnected(f protocol.Frame) {
 	if cs.targetWS != nil {
 		cs.targetWS.Close()
 	}
-	log.Printf("[INFO] client disconnected, closed target clientID=%s", f.ClientID)
+	log.Printf("client closed id=%s", f.ClientID)
 }
 
 func (h *Handler) readFromTarget(clientID string, conn *websocket.Conn, cs *clientState) {
@@ -300,7 +300,7 @@ func (h *Handler) readFromTarget(clientID string, conn *websocket.Conn, cs *clie
 		}
 		h.mu.Unlock()
 		if ok {
-			log.Printf("[INFO] target disconnected clientID=%s", clientID)
+			log.Printf("target disconnected id=%s", clientID)
 			if cs.iamToken != "" {
 				h.ws.Disconnect(clientID, cs.iamToken)
 			}
@@ -318,7 +318,7 @@ func (h *Handler) readFromTarget(clientID string, conn *websocket.Conn, cs *clie
 			dataType = "TEXT"
 		}
 		if cs.iamToken == "" {
-			log.Printf("[WARN] no IAM token, dropping clientID=%s", clientID)
+			log.Printf("no token, drop id=%s", clientID)
 			continue
 		}
 
@@ -327,7 +327,7 @@ func (h *Handler) readFromTarget(clientID string, conn *websocket.Conn, cs *clie
 		sendErr := h.ws.Send(clientID, data, dataType, cs.iamToken)
 		cs.mu.Unlock()
 		if sendErr != nil {
-			log.Printf("[ERROR] send to client failed clientID=%s err=%v", clientID, sendErr)
+			log.Printf("send failed id=%s err=%v", clientID, sendErr)
 		}
 	}
 }
@@ -383,7 +383,7 @@ func (h *Handler) flushPending(clientID string) {
 		err := conn.WriteMessage(msg.msgType, msg.data)
 		cs.mu.Unlock()
 		if err != nil {
-			log.Printf("[ERROR] write to target failed clientID=%s err=%v", clientID, err)
+			log.Printf("target write failed id=%s err=%v", clientID, err)
 			h.closeClient(clientID, cs, "target write failed")
 			return
 		}
@@ -412,7 +412,7 @@ func (h *Handler) closeClient(clientID string, cs *clientState, reason string) {
 	if cs.iamToken != "" {
 		h.ws.Disconnect(clientID, cs.iamToken)
 	}
-	log.Printf("[WARN] client closed clientID=%s reason=%s", clientID, reason)
+	log.Printf("closed id=%s reason=%s", clientID, reason)
 }
 
 func (h *Handler) nextArrivalLocked() uint64 {

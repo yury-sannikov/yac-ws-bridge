@@ -1,4 +1,4 @@
-module github.com/bridge-to-freedom/adapter
+module github.com/yury-sannikov/hass-ws-relay
 
 go 1.21
 

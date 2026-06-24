@@ -15,10 +15,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/bridge-to-freedom/adapter/internal/config"
-	"github.com/bridge-to-freedom/adapter/internal/handler"
-	"github.com/bridge-to-freedom/adapter/internal/protocol"
-	"github.com/bridge-to-freedom/adapter/internal/upstream"
+	"github.com/yury-sannikov/hass-ws-relay/internal/config"
+	"github.com/yury-sannikov/hass-ws-relay/internal/handler"
+	"github.com/yury-sannikov/hass-ws-relay/internal/protocol"
+	"github.com/yury-sannikov/hass-ws-relay/internal/upstream"
 )
 
 func main() {
@@ -53,28 +53,25 @@ func main() {
 	if cfg.Wakeup.ListenPort > 0 {
 		prefix := strings.TrimRight(cfg.Wakeup.PathPrefix, "/")
 		mux := http.NewServeMux()
-		mux.HandleFunc(prefix+"/upstream-id", func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc(prefix+"/status", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				return
 			}
 			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			if token != cfg.Bridge.AuthToken {
-				log.Println("[WARN] /upstream-id unauthorized request")
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
 			connID := ups.UpstreamConnID()
 			if connID == "" {
-				log.Println("[INFO] /upstream-id requested, no upstream connected")
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
-			log.Printf("[INFO] /upstream-id requested, returning connID=%s", connID)
 			w.Header().Set("Content-Type", "text/plain")
 			w.Write([]byte(connID))
 		})
-		mux.HandleFunc(prefix+"/proxy", func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc(prefix+"/relay", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				return
@@ -98,12 +95,10 @@ func main() {
 				IsBase64    bool              `json:"isBase64Encoded"`
 			}
 			if err := json.Unmarshal(body, &proxyReq); err != nil {
-				log.Printf("[WARN] bad proxy request err=%v", err)
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
 
-			// Build target URL (ws:// -> http://, wss:// -> https://)
 			targetBase := cfg.Target.URL
 			targetBase = strings.Replace(targetBase, "wss://", "https://", 1)
 			targetBase = strings.Replace(targetBase, "ws://", "http://", 1)
@@ -136,7 +131,6 @@ func main() {
 			}
 			proxyHTTP, err := http.NewRequestWithContext(r.Context(), method, targetURL, reqBody)
 			if err != nil {
-				log.Printf("[ERROR] proxy: create request err=%v", err)
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
@@ -150,7 +144,6 @@ func main() {
 
 			resp, err := http.DefaultClient.Do(proxyHTTP)
 			if err != nil {
-				log.Printf("[ERROR] proxy: target err=%v", err)
 				w.Header().Set("Content-Type", "application/json")
 				w.Write([]byte(`{"statusCode":502,"body":"target unreachable"}`))
 				return
@@ -159,7 +152,6 @@ func main() {
 
 			respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 			if err != nil {
-				log.Printf("[ERROR] proxy: read response err=%v", err)
 				w.Header().Set("Content-Type", "application/json")
 				w.Write([]byte(`{"statusCode":502,"body":"read error"}`))
 				return
@@ -183,7 +175,6 @@ func main() {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(result)
-			log.Printf("[INFO] proxy: %s %s -> %d", method, proxyReq.Path, resp.StatusCode)
 		})
 		mux.HandleFunc(prefix+"/", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
@@ -202,14 +193,11 @@ func main() {
 			}
 			f, err := protocol.Decode(body)
 			if err != nil {
-				log.Printf("[DEBUG] bad wakeup frame err=%v", err)
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
 			h.HandleFrame(f)
-			// Trigger upstream connection if not connected
 			ups.EnsureConnected(ctx)
-			// Return upstream connection ID if available
 			if connID := ups.UpstreamConnID(); connID != "" {
 				w.Header().Set("Content-Type", "text/plain")
 				w.Write([]byte(connID))
@@ -220,14 +208,13 @@ func main() {
 		addr := fmt.Sprintf(":%d", cfg.Wakeup.ListenPort)
 		srv := &http.Server{Addr: addr, Handler: mux}
 		go func() {
-			log.Printf("[INFO] wakeup HTTP server starting addr=%s", addr)
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("wakeup server: %v", err)
+				log.Fatalf("wakeup: %v", err)
 			}
 		}()
 		go func() { <-ctx.Done(); srv.Close() }()
 	}
 
-	log.Printf("[INFO] adapter starting bridge=%s target=%s", cfg.Bridge.URL, cfg.Target.URL)
+	log.Printf("starting bridge=%s", cfg.Bridge.URL)
 	ups.Run(ctx)
 }

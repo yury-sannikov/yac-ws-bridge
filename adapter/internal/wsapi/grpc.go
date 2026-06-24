@@ -32,7 +32,6 @@ func (g *grpcClient) init() {
 			return
 		}
 		g.client = ws.NewConnectionServiceClient(g.conn)
-		log.Println("gRPC WS API client initialized:", grpcEndpoint)
 	})
 }
 
@@ -60,7 +59,7 @@ func (g *grpcClient) Send(connectionId string, data []byte, dataType string, iam
 		Type:         t,
 	})
 	if err != nil {
-		log.Println("wsapi.Send gRPC failed:", connectionId, err)
+		log.Println("send failed:", err)
 		return err
 	}
 	return nil
@@ -75,8 +74,5 @@ func (g *grpcClient) Disconnect(connectionId string, iamToken string) error {
 	_, err := g.client.Disconnect(g.authCtx(iamToken), &ws.DisconnectRequest{
 		ConnectionId: connectionId,
 	})
-	if err != nil {
-		log.Println("wsapi.Disconnect gRPC failed:", connectionId, err)
-	}
 	return err
 }

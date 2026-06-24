@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bridge-to-freedom/adapter/internal/config"
-	"github.com/bridge-to-freedom/adapter/internal/protocol"
+	"github.com/yury-sannikov/hass-ws-relay/internal/config"
+	"github.com/yury-sannikov/hass-ws-relay/internal/protocol"
 	"github.com/gorilla/websocket"
 )
 
