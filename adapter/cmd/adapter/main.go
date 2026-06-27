@@ -205,7 +205,27 @@ func main() {
 				w.WriteHeader(http.StatusOK)
 			}
 		})
-		addr := fmt.Sprintf(":%d", cfg.Wakeup.ListenPort)
+		addr := fmt.Sprintf("%s:%d", cfg.Wakeup.ListenAddr, cfg.Wakeup.ListenPort)
+		// Serve static files for all other paths (HA frontend)
+		if cfg.Wakeup.StaticDir != "" {
+			fs := http.FileServer(http.Dir(cfg.Wakeup.StaticDir))
+			mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Try the file; fall back to index.html for SPA-style routing
+				path := r.URL.Path
+				if path == "/" {
+					http.ServeFile(w, r, cfg.Wakeup.StaticDir+"/index.html")
+					return
+				}
+				// Check if file exists
+				f, err := http.Dir(cfg.Wakeup.StaticDir).Open(path)
+				if err != nil {
+					http.ServeFile(w, r, cfg.Wakeup.StaticDir+"/index.html")
+					return
+				}
+				f.Close()
+				fs.ServeHTTP(w, r)
+			}))
+		}
 		srv := &http.Server{Addr: addr, Handler: mux}
 		go func() {
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

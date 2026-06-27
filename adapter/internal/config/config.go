@@ -23,7 +23,9 @@ type Config struct {
 	} `yaml:"bridge"`
 	Wakeup struct {
 		ListenPort int    `yaml:"listenPort"`
+		ListenAddr string `yaml:"listenAddr"`
 		PathPrefix string `yaml:"pathPrefix"`
+		StaticDir  string `yaml:"staticDir"`
 		TLSCert    string `yaml:"tlsCert"`
 		TLSKey     string `yaml:"tlsKey"`
 	} `yaml:"wakeup"`

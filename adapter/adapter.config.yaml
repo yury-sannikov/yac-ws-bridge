@@ -9,7 +9,9 @@ bridge:
 
 wakeup:
   listenPort: 3001
-  # pathPrefix: "/somepath/aaa"  # optional, must match HA_ORIGIN_BASE path in cloud function
+  listenAddr: "0.0.0.0"
+  # pathPrefix: "/api/hassio/ws"  # must match HA_ORIGIN_BASE path in cloud function
+  # staticDir: "/var/www/ha-static"  # optional: serve static files on non-API paths
 
 target:
   url: "ws://localhost:9090"

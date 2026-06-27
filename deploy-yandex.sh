@@ -34,6 +34,7 @@ AGW_ID="${YAC_AGW_ID:?Set YAC_AGW_ID in deploy/.env}"
 FUNCTION_NAME="${YAC_FUNCTION_NAME:-hass-ws-relay}"
 SA_NAME="${YAC_SA_NAME:-hass-relay-sa}"
 POD_IP="${POD_IP:?Set POD_IP in deploy/.env}"
+POD_PORT="${POD_PORT:-3001}"
 AGW_DOMAIN="${AGW_DOMAIN:?Set AGW_DOMAIN in deploy/.env}"
 
 # Shared auth token
@@ -166,6 +167,7 @@ update_agw_spec() {
     sed -e "s|\${FUNCTION_ID}|$FUNCTION_ID|g" \
         -e "s|\${SERVICE_ACCOUNT_ID}|$SA_ID|g" \
         -e "s|\${POD_IP}|$POD_IP|g" \
+        -e "s|\${POD_PORT}|$POD_PORT|g" \
         -e "s|\${AGW_DOMAIN}|$AGW_DOMAIN|g" \
         "$SCRIPT_DIR/deploy/agw-spec.yaml" > "$SPEC_FILE"
 

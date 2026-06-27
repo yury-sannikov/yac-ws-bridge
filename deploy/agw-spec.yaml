@@ -41,7 +41,7 @@ paths:
     x-yc-apigateway-any-method:
       x-yc-apigateway-integration:
         type: http
-        url: http://${POD_IP}/api/hassio/ws/{wakeup_path}
+        url: http://${POD_IP}:${POD_PORT}/api/hassio/ws/{wakeup_path}
       parameters:
       - name: wakeup_path
         in: path
@@ -55,14 +55,14 @@ paths:
     x-yc-apigateway-any-method:
       x-yc-apigateway-integration:
         type: http
-        url: http://${POD_IP}/api/hassio/ws/
+        url: http://${POD_IP}:${POD_PORT}/api/hassio/ws/
 
   # Default: HTTP pass-through + WebSocket subscriptions
   /{path+}:
     x-yc-apigateway-any-method:
       x-yc-apigateway-integration:
         type: http
-        url: http://${POD_IP}/{path}
+        url: http://${POD_IP}:${POD_PORT}/{path}
       parameters:
       - explode: false
         in: path
@@ -121,4 +121,4 @@ paths:
     x-yc-apigateway-any-method:
       x-yc-apigateway-integration:
         type: http
-        url: http://${POD_IP}/
+        url: http://${POD_IP}:${POD_PORT}/
