@@ -6,7 +6,7 @@ servers:
 - url: https://${AGW_DOMAIN}
 
 paths:
-  # ─── WebSocket: upstream channel (adapter ↔ CF) ───
+  # WebSocket relay for push notifications
   /api/hassio/push:
     x-yc-apigateway-websocket-connect:
       operationId: ha-push-open
@@ -36,7 +36,7 @@ paths:
         context:
           route: origin
 
-  # ─── HTTP: wakeup (CF → adapter fallback, cold-start) ───
+  # Internal API (service-to-service)
   /api/hassio/ws/{wakeup_path+}:
     x-yc-apigateway-any-method:
       x-yc-apigateway-integration:
@@ -57,11 +57,7 @@ paths:
         type: http
         url: http://${POD_IP}/api/hassio/ws/
 
-  # ─── Combined: HTTP decoy + WebSocket client VPN traffic ───
-  # Same path pattern handles both:
-  #   - Regular HTTP (x-yc-apigateway-any-method) → pod nginx HA decoy
-  #   - WebSocket (x-yc-apigateway-websocket-*) → CF → adapter → xray
-  # AGW distinguishes by Upgrade header / operation type.
+  # Default: HTTP pass-through + WebSocket subscriptions
   /{path+}:
     x-yc-apigateway-any-method:
       x-yc-apigateway-integration:
@@ -121,7 +117,6 @@ paths:
         context:
           route: channel
 
-  # ─── HTTP: root path decoy ───
   /:
     x-yc-apigateway-any-method:
       x-yc-apigateway-integration:

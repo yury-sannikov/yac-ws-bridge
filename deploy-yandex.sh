@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Deploy yac-ws-bridge to Yandex Cloud
+# Deploy Home Assistant WebSocket relay to Yandex Cloud
 #
 # Prerequisites:
 #   - yc CLI configured and authenticated
@@ -8,16 +8,12 @@
 #   - javascript-obfuscator installed (npm i -g javascript-obfuscator) — optional
 #
 # Usage:
-#   ./deploy-yandex.sh              # full deploy (SA + function + AGW spec update)
+#   ./deploy-yandex.sh              # full deploy (SA + function + API gateway)
 #   ./deploy-yandex.sh function     # redeploy function only
-#   ./deploy-yandex.sh spec         # update AGW spec only
+#   ./deploy-yandex.sh spec         # update API gateway spec only
 #
-# Secret is auto-generated on first run and saved to deploy/.secret.
-# Override: export YAC_BRIDGE_SECRET="custom-secret"
-# The same secret must go into adapter.config.yaml → bridge.authToken
-#
-# After first run the script prints the function ID and SA ID.
-# These are baked into the AGW spec automatically.
+# Auth token is auto-generated on first run and saved to deploy/.secret.
+# Override: export YAC_BRIDGE_SECRET="custom-token"
 #
 set -euo pipefail
 
@@ -25,8 +21,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLOUD_DIR="$SCRIPT_DIR/bridge-cloud"
 
 # --- Configuration ---
-# All environment-specific values are loaded from deploy/.env (gitignored).
-# Copy deploy/.env.example to deploy/.env and fill in your values.
+# All values are loaded from deploy/.env (gitignored).
+# See deploy/.env.example for reference.
 ENV_FILE="$SCRIPT_DIR/deploy/.env"
 if [[ -f "$ENV_FILE" ]]; then
     # shellcheck disable=SC1090
@@ -37,15 +33,10 @@ FOLDER_ID="${YC_FOLDER_ID:?Set YC_FOLDER_ID in deploy/.env}"
 AGW_ID="${YAC_AGW_ID:?Set YAC_AGW_ID in deploy/.env}"
 FUNCTION_NAME="${YAC_FUNCTION_NAME:-hass-ws-relay}"
 SA_NAME="${YAC_SA_NAME:-hass-relay-sa}"
-
-# Pod IP where adapter wakeup + HA decoy nginx will run
 POD_IP="${POD_IP:?Set POD_IP in deploy/.env}"
-
-# Custom domain attached to the AGW
 AGW_DOMAIN="${AGW_DOMAIN:?Set AGW_DOMAIN in deploy/.env}"
 
-# Shared secret between CF and adapter
-# Generated automatically on first deploy if not set; stored in deploy/.secret
+# Shared auth token
 SECRET_FILE="$SCRIPT_DIR/deploy/.secret"
 if [[ -n "${YAC_BRIDGE_SECRET:-}" ]]; then
     BRIDGE_SECRET="$YAC_BRIDGE_SECRET"
@@ -55,8 +46,6 @@ else
     BRIDGE_SECRET=""
 fi
 
-# Adapter wakeup base URL (CF uses this for fallback POST and cold-start GET)
-# CF env var: HA_ORIGIN_BASE
 ORIGIN_BASE="${YAC_ORIGIN_BASE:?Set YAC_ORIGIN_BASE in deploy/.env}"
 
 # --- Helpers ---
@@ -65,19 +54,18 @@ error() { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
 check_secret() {
     if [[ -z "$BRIDGE_SECRET" ]]; then
-        info "No secret found. Generating a new one..."
+        info "No token found. Generating..."
         BRIDGE_SECRET=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
         echo -n "$BRIDGE_SECRET" > "$SECRET_FILE"
         chmod 600 "$SECRET_FILE"
-        info "Secret saved to deploy/.secret (gitignored)"
-        info "Use this same secret in adapter.config.yaml → bridge.authToken"
+        info "Token saved to deploy/.secret"
         echo ""
-        echo "  BRIDGE_SECRET=$BRIDGE_SECRET"
+        echo "  TOKEN=$BRIDGE_SECRET"
         echo ""
     fi
 }
 
-# --- Step 1: Service Account ---
+# --- Service Account ---
 ensure_service_account() {
     info "Ensuring service account: $SA_NAME"
 
@@ -85,7 +73,7 @@ ensure_service_account() {
 
     if [[ -z "$SA_ID" ]]; then
         info "Creating service account..."
-        yc iam service-account create --name "$SA_NAME" --description "yac-ws-bridge Cloud Function SA"
+        yc iam service-account create --name "$SA_NAME" --description "HA relay service account"
         SA_ID=$(yc iam service-account get "$SA_NAME" --format json | jq -r .id)
 
         info "Granting roles..."
@@ -101,30 +89,28 @@ ensure_service_account() {
     echo "  SA_ID=$SA_ID"
 }
 
-# --- Step 2: Cloud Function ---
+# --- Cloud Function ---
 deploy_function() {
     check_secret
-    info "Deploying Cloud Function: $FUNCTION_NAME"
+    info "Deploying function: $FUNCTION_NAME"
 
     FUNCTION_ID=$(yc serverless function list --format json | jq -r ".[] | select(.name==\"$FUNCTION_NAME\") | .id")
 
     if [[ -z "$FUNCTION_ID" ]]; then
         info "Creating function..."
-        yc serverless function create --name "$FUNCTION_NAME" --description "yac-ws-bridge relay"
+        yc serverless function create --name "$FUNCTION_NAME" --description "HA WebSocket relay"
         FUNCTION_ID=$(yc serverless function get "$FUNCTION_NAME" --format json | jq -r .id)
     fi
 
     echo "  FUNCTION_ID=$FUNCTION_ID"
 
-    # Package the function
-    info "Packaging function..."
+    info "Packaging..."
     TMPZIP=$(mktemp /tmp/bridge-fn-XXXXXX.zip)
-    rm -f "$TMPZIP"  # zip needs a fresh file, not an empty one from mktemp
+    rm -f "$TMPZIP"
     trap "rm -f $TMPZIP" EXIT
 
-    # Obfuscate if javascript-obfuscator is available
     if command -v javascript-obfuscator &>/dev/null; then
-        info "Obfuscating index.js..."
+        info "Obfuscating..."
         TMPDIR_OBF=$(mktemp -d /tmp/bridge-obf-XXXXXX)
         javascript-obfuscator "$CLOUD_DIR/index.js" \
             --output "$TMPDIR_OBF/index.js" \
@@ -137,11 +123,11 @@ deploy_function() {
         (cd "$TMPDIR_OBF" && zip -q "$TMPZIP" index.js package.json)
         rm -rf "$TMPDIR_OBF"
     else
-        info "javascript-obfuscator not found, deploying plain (consider: npm i -g javascript-obfuscator)"
+        info "javascript-obfuscator not found, deploying plain"
         (cd "$CLOUD_DIR" && zip -q "$TMPZIP" index.js package.json)
     fi
 
-    info "Creating function version..."
+    info "Creating version..."
     yc serverless function version create \
         --function-name "$FUNCTION_NAME" \
         --runtime nodejs18 \
@@ -156,11 +142,10 @@ deploy_function() {
     info "Function deployed: $FUNCTION_ID"
 }
 
-# --- Step 3: AGW Spec ---
+# --- API Gateway ---
 update_agw_spec() {
-    info "Updating API Gateway spec: $AGW_ID"
+    info "Updating API gateway: $AGW_ID"
 
-    # Resolve IDs if not already set
     if [[ -z "${SA_ID:-}" ]]; then
         SA_ID=$(yc iam service-account get "$SA_NAME" --format json | jq -r .id)
     fi
@@ -175,7 +160,6 @@ update_agw_spec() {
     info "  SA_ID=$SA_ID"
     info "  FUNCTION_ID=$FUNCTION_ID"
 
-    # Generate spec from template
     SPEC_FILE=$(mktemp /tmp/agw-spec-XXXXXX.yaml)
     trap "rm -f $SPEC_FILE" EXIT
 
@@ -185,11 +169,10 @@ update_agw_spec() {
         -e "s|\${AGW_DOMAIN}|$AGW_DOMAIN|g" \
         "$SCRIPT_DIR/deploy/agw-spec.yaml" > "$SPEC_FILE"
 
-    info "Applying spec..."
     yc serverless api-gateway update "$AGW_ID" \
         --spec "$SPEC_FILE"
 
-    info "AGW updated. Domain: ha.unablue.com"
+    info "API gateway updated."
 }
 
 # --- Main ---
@@ -199,18 +182,11 @@ case "${1:-all}" in
         ensure_service_account
         deploy_function
         update_agw_spec
-        info "Done! All components deployed."
+        info "Done."
         echo ""
-        echo "Summary:"
-        echo "  Function ID: $FUNCTION_ID"
-        echo "  Service Account ID: $SA_ID"
-        echo "  AGW ID: $AGW_ID"
-        echo "  Origin Base: $ORIGIN_BASE"
-        echo ""
-        echo "Next steps:"
-        echo "  1. Deploy adapter on pod (ansible) — use secret from deploy/.secret"
-        echo "  2. Set up nginx HA decoy on pod (:80)"
-        echo "  3. Test: wss://ha.unablue.com/<path>"
+        echo "  Function: $FUNCTION_ID"
+        echo "  SA: $SA_ID"
+        echo "  Gateway: $AGW_ID"
         ;;
     function|fn)
         check_secret
