@@ -1,0 +1,129 @@
+openapi: 3.0.0
+info:
+  title: home-assistant-msk
+  version: 1.0.0
+servers:
+- url: https://${AGW_DOMAIN}
+
+paths:
+  # ─── WebSocket: upstream channel (adapter ↔ CF) ───
+  /api/hassio/push:
+    x-yc-apigateway-websocket-connect:
+      operationId: ha-push-open
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        tag: "$latest"
+        service_account_id: ${SERVICE_ACCOUNT_ID}
+        context:
+          route: origin
+    x-yc-apigateway-websocket-message:
+      operationId: ha-push-msg
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        tag: "$latest"
+        service_account_id: ${SERVICE_ACCOUNT_ID}
+        context:
+          route: origin
+    x-yc-apigateway-websocket-disconnect:
+      operationId: ha-push-close
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        tag: "$latest"
+        service_account_id: ${SERVICE_ACCOUNT_ID}
+        context:
+          route: origin
+
+  # ─── HTTP: wakeup (CF → adapter fallback, cold-start) ───
+  /api/hassio/ws/{wakeup_path+}:
+    x-yc-apigateway-any-method:
+      x-yc-apigateway-integration:
+        type: http
+        url: http://${POD_IP}/api/hassio/ws/{wakeup_path}
+      parameters:
+      - name: wakeup_path
+        in: path
+        required: true
+        schema:
+          type: string
+        style: simple
+        explode: false
+
+  /api/hassio/ws/:
+    x-yc-apigateway-any-method:
+      x-yc-apigateway-integration:
+        type: http
+        url: http://${POD_IP}/api/hassio/ws/
+
+  # ─── Combined: HTTP decoy + WebSocket client VPN traffic ───
+  # Same path pattern handles both:
+  #   - Regular HTTP (x-yc-apigateway-any-method) → pod nginx HA decoy
+  #   - WebSocket (x-yc-apigateway-websocket-*) → CF → adapter → xray
+  # AGW distinguishes by Upgrade header / operation type.
+  /{path+}:
+    x-yc-apigateway-any-method:
+      x-yc-apigateway-integration:
+        type: http
+        url: http://${POD_IP}/{path}
+      parameters:
+      - explode: false
+        in: path
+        name: path
+        required: true
+        schema:
+          type: string
+        style: simple
+    x-yc-apigateway-websocket-connect:
+      operationId: ha-sub-open
+      parameters:
+      - name: path
+        in: path
+        required: true
+        schema:
+          type: string
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        tag: "$latest"
+        service_account_id: ${SERVICE_ACCOUNT_ID}
+        context:
+          route: channel
+    x-yc-apigateway-websocket-message:
+      operationId: ha-sub-msg
+      parameters:
+      - name: path
+        in: path
+        required: true
+        schema:
+          type: string
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        tag: "$latest"
+        service_account_id: ${SERVICE_ACCOUNT_ID}
+        context:
+          route: channel
+    x-yc-apigateway-websocket-disconnect:
+      operationId: ha-sub-close
+      parameters:
+      - name: path
+        in: path
+        required: true
+        schema:
+          type: string
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        tag: "$latest"
+        service_account_id: ${SERVICE_ACCOUNT_ID}
+        context:
+          route: channel
+
+  # ─── HTTP: root path decoy ───
+  /:
+    x-yc-apigateway-any-method:
+      x-yc-apigateway-integration:
+        type: http
+        url: http://${POD_IP}/

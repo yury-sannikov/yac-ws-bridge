@@ -19,3 +19,7 @@ Thumbs.db
 
 maui-client/bin
 maui-client/obj
+
+# Deploy secrets
+deploy/.secret
+deploy/.env
