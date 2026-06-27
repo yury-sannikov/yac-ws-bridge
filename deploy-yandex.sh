@@ -131,9 +131,9 @@ deploy_function() {
     info "Creating version..."
     yc serverless function version create \
         --function-name "$FUNCTION_NAME" \
-        --runtime nodejs18 \
+        --runtime nodejs22 \
         --entrypoint index.handler \
-        --memory 128m \
+        --memory 256m \
         --execution-timeout 10s \
         --concurrency 4 \
         --source-path "$TMPZIP" \
