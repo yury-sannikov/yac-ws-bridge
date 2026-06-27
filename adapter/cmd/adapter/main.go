@@ -52,13 +52,23 @@ func main() {
 	// Wakeup HTTP server: receives protocol frames via POST (same as upstream WS)
 	if cfg.Wakeup.ListenPort > 0 {
 		prefix := strings.TrimRight(cfg.Wakeup.PathPrefix, "/")
+
+		// extractToken checks X-Auth-Token first (for AGW pass-through),
+		// falls back to Authorization: Bearer.
+		extractToken := func(r *http.Request) string {
+			if t := r.Header.Get("X-Auth-Token"); t != "" {
+				return t
+			}
+			return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		}
+
 		mux := http.NewServeMux()
 		mux.HandleFunc(prefix+"/status", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				return
 			}
-			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			token := extractToken(r)
 			if token != cfg.Bridge.AuthToken {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
@@ -76,7 +86,7 @@ func main() {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				return
 			}
-			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			token := extractToken(r)
 			if token != cfg.Bridge.AuthToken {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
@@ -181,7 +191,7 @@ func main() {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				return
 			}
-			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			token := extractToken(r)
 			if token != cfg.Bridge.AuthToken {
 				w.WriteHeader(http.StatusUnauthorized)
 				return

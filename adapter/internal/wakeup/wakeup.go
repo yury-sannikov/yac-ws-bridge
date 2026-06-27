@@ -26,7 +26,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	token := r.Header.Get("X-Auth-Token")
+	if token == "" {
+		token = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
 	if token != s.AuthToken {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
